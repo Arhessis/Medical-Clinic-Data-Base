@@ -202,7 +202,8 @@ WHERE RV.Statut = 'Annulé' AND RV.DateRV >= DATEADD(DAY, -30, GETDATE());
 
 -- Partie 3 --
 
--- 1.sp_PrendreRendezVous (sans valeur de retour) : enregistre un nouveau rendez-vous en vérifiant qu'il n'y a pas de conflit d'horaire pour le médecin.
+-- 1.sp_PrendreRendezVous (sans valeur de retour) : enregistre un nouveau rendez-vous 
+-- en vérifiant qu'il n'y a pas de conflit d'horaire pour le médecin.
 -- Utilise une valeur de défaut pour le motif (avec gestion d'erreurs TRY/CATCH)
 GO
 IF OBJECT_ID('dbo.sp_PrendreRendezVous') IS NOT NULL
@@ -242,7 +243,8 @@ BEGIN
 END
 GO
 
--- 2. sp_CompleterRendezVous (sans valeur de retour) : marque le rendez-vous comme complété, génère une prescription si nécessaire et crée la facture associée.
+-- 2. sp_CompleterRendezVous (sans valeur de retour) : marque le rendez-vous comme complété, 
+-- génère une prescription si nécessaire et crée la facture associée.
 -- Appeler votre procédure et afficher selon le format
 -- « Rendez-vous complété et facture créée avec succès. » ou
 -- « ERREUR : Rendez-vous introuvable ou déjà traité. »
@@ -260,6 +262,41 @@ CREATE PROCEDURE sp_CompleterRendezVous
     @Duree VARCHAR(50) = NULL
 AS
 BEGIN
-    -- Ton code ira ici
+    BEGIN TRY
+        IF NOT EXISTS (
+            SELECT 1
+            FROM RendezVous 
+            WHERE NoRendezVous = @NoRendezVous 
+              AND Statut = 'Planifié'
+        )
+
+        BEGIN
+            THROW 50000, 'Rendez-vous introuvable ou déjà traité', 1; 
+        END
+
+        UPDATE RendezVous
+        SET Statut = 'Complété'
+        WHERE NoRendezVous = @NoRendezVous;
+
+        IF @Medicament IS NOT NULL
+        BEGIN
+            INSERT INTO Prescription (NoRendezVous, Medicament, Dosage, Duree)
+            VALUES (@NoRendezVous, @Medicament, @Dosage, @Duree);
+        END
+
+        DECLARE @NoPatient INT;
+        SELECT @NoPatient = NoPatient FROM RendezVous WHERE NoRendezVous = @NoRendezVous;
+
+        DECLARE @MontantDu DECIMAL(10, 2) = @MontantTotal - @MontantAssurance;
+
+        INSERT INTO Facture (NoRendezVous, NoPatient, MontantTotal, MontantAssurance, MontantDu, Statut)
+            VALUES (@NoRendezVous, @NoPatient, @MontantTotal, @MontantAssurance, @MontantDu, 'Non payé');
+
+        PRINT 'Rendez-vous complété et facture créée avec succès.';
+
+    END TRY
+    BEGIN CATCH
+        PRINT 'ERREUR : Rendez-vous introuvable ou déjà traité.';
+    END CATCH
 END
 GO
