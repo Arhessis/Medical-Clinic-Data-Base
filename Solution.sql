@@ -300,3 +300,21 @@ BEGIN
     END CATCH
 END
 GO
+
+-- 3. sp_StatistiquesPatient (avec 2 paramètres OUTPUT) : reçoit un numéro de patient 
+-- et retourne via des paramètres de sortie le nombre total de rendez-vous 
+-- et le montant total dû pour ce patient.
+GO
+IF OBJECT_ID('dbo.sp_StatistiquesPatient') IS NOT NULL
+    DROP PROCEDURE sp_StatistiquesPatient
+GO
+    CREATE PROCEDURE sp_StatistiquesPatient
+        @NoPatient INT,
+        @NombreRendezVous INT OUTPUT,
+        @MontantTotalDû DECIMAL(10, 2) OUTPUT
+        AS 
+    BEGIN
+        BEGIN TRY (
+        
+        
+        )
