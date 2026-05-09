@@ -308,13 +308,246 @@ GO
 IF OBJECT_ID('dbo.sp_StatistiquesPatient') IS NOT NULL
     DROP PROCEDURE sp_StatistiquesPatient
 GO
-    CREATE PROCEDURE sp_StatistiquesPatient
-        @NoPatient INT,
-        @NombreRendezVous INT OUTPUT,
-        @MontantTotalDû DECIMAL(10, 2) OUTPUT
-        AS 
+
+CREATE PROCEDURE sp_StatistiquesPatient
+    @NoPatient INT,
+    @NombreRendezVous INT OUTPUT,
+    @MontantTotalDu DECIMAL(10, 2) OUTPUT
+AS 
+BEGIN
+    BEGIN TRY 
+
+        SELECT @NombreRendezVous = COUNT(NoRendezVous)
+        FROM RendezVous
+        WHERE NoPatient = @NoPatient;
+
+        SELECT @MontantTotalDu = ISNULL(SUM(MontantDu), 0)
+        FROM Facture
+        WHERE NoPatient = @NoPatient;
+
+    END TRY
+    BEGIN CATCH
+        PRINT 'ERREUR lors du calcul des statistiques : ' + ERROR_MESSAGE();
+    END CATCH
+END
+GO
+
+DECLARE @OutputNbRendezVous INT;
+DECLARE @OutputMontantDu DECIMAL(10, 2);
+
+EXEC sp_StatistiquesPatient 
+    @NoPatient = 3, 
+    @NombreRendezVous = @OutputNbRendezVous OUTPUT, 
+    @MontantTotalDu = @OutputMontantDu OUTPUT;
+
+PRINT 'Nombre de rendez-vous: ' + CAST(@OutputNbRendezVous AS VARCHAR(10));
+PRINT 'Montant total dû : ' + CAST(@OutputMontantDu AS VARCHAR(10)) + ' $';
+GO
+
+-- 4. sp_InfoFacture (avec 2 paramètres OUTPUT) : reçoit un numéro de facture 
+-- et retourne le nom complet du patient et le statut de la facture.
+GO
+IF OBJECT_ID('dbo.sp_InfoFacture') IS NOT NULL
+    DROP PROCEDURE sp_InfoFacture
+GO
+
+CREATE PROCEDURE sp_InfoFacture
+    @NoFacture INT,
+    @NomPatient VARCHAR(100) OUTPUT,
+    @StatutFacture VARCHAR(20) OUTPUT
+AS
+BEGIN
+    BEGIN TRY
+        SELECT 
+            @NomPatient = P.Nom + ' ' + P.Prenom,
+            @StatutFacture = F.Statut
+        FROM Facture F
+        INNER JOIN Patient P ON F.NoPatient = P.NoPatient
+        WHERE F.NoFacture = @NoFacture;
+    END TRY
+    BEGIN CATCH
+        PRINT 'Erreur lors de la récupération des informations.';
+    END CATCH
+END
+GO
+
+DECLARE @OutNomPatient VARCHAR(100);
+DECLARE @OutStatut VARCHAR(20);
+
+EXEC sp_InfoFacture @NoFacture = 1, @NomPatient = @OutNomPatient OUTPUT, @StatutFacture = @OutStatut OUTPUT;
+
+PRINT 'Patient: ' + ISNULL(@OutNomPatient, 'Inconnu');
+PRINT 'Statut : ' + ISNULL(@OutStatut, 'Inconnu');
+GO
+
+-- Triggers
+
+-- Trigger AFTER INSERT sur la table Rendez-vous (Gestion des conflits)
+GO
+IF OBJECT_ID('dbo.trg_VerificationConflitRV', 'TR') IS NOT NULL
+    DROP TRIGGER trg_VerificationConflitRV;
+GO
+
+CREATE TRIGGER trg_VerificationConflitRV
+ON RendezVous
+AFTER INSERT
+AS
+BEGIN
+    DECLARE @NoPatient INT, @NoMedecin INT, @DateRV DATE, @HeureRV TIME(7);
+
+    SELECT @NoPatient = NoPatient, @NoMedecin = NoMedecin, @DateRV = DateRV, @HeureRV = HeureRV 
+    FROM inserted;
+
+    IF EXISTS (
+        SELECT 1 FROM RendezVous 
+        WHERE NoPatient = @NoPatient AND DateRV = @DateRV AND HeureRV = @HeureRV 
+        AND NoRendezVous NOT IN (SELECT NoRendezVous FROM inserted) AND Statut != 'Annulé'
+    )
     BEGIN
-        BEGIN TRY (
-        
-        
-        )
+        PRINT 'Conflit: le patient a déjà un rendez-vous à cette heure.';
+        ROLLBACK TRANSACTION; -- Annule l'insertion
+        RETURN;
+    END
+
+    IF EXISTS (
+        SELECT 1 FROM RendezVous 
+        WHERE NoMedecin = @NoMedecin AND DateRV = @DateRV AND HeureRV = @HeureRV 
+        AND NoRendezVous NOT IN (SELECT NoRendezVous FROM inserted) AND Statut != 'Annulé'
+    )
+    BEGIN
+        PRINT 'Conflit: le médecin a déjà un rendez-vous à cette heure.';
+        ROLLBACK TRANSACTION; -- Annule l'insertion
+        RETURN;
+    END
+END
+GO
+
+-- Trigger AFTER UPDATE sur la table Facture
+GO
+IF OBJECT_ID('dbo.trg_PaiementAutomatique', 'TR') IS NOT NULL
+    DROP TRIGGER trg_PaiementAutomatique;
+GO
+
+CREATE TRIGGER trg_PaiementAutomatique
+ON Facture
+AFTER UPDATE
+AS
+BEGIN
+    IF UPDATE(Statut)
+    BEGIN
+        INSERT INTO Paiement (NoFacture, DatePaiement, Montant)
+        SELECT i.NoFacture, GETDATE(), i.MontantDu
+        FROM inserted i
+        INNER JOIN deleted d ON i.NoFacture = d.NoFacture
+        WHERE i.Statut = 'Payé' AND d.Statut = 'Non payé';
+
+        IF @@ROWCOUNT > 0
+        BEGIN
+            PRINT 'Les tables Paiement et Facture ont été mises à jour';
+        END
+    END
+END
+GO
+
+-- Fonctions
+
+-- Fonction scalaire fn_CalculerMontantDu
+GO
+IF OBJECT_ID('dbo.fn_CalculerMontantDu', 'FN') IS NOT NULL
+    DROP FUNCTION fn_CalculerMontantDu;
+GO
+
+CREATE FUNCTION fn_CalculerMontantDu (@NoFacture INT)
+RETURNS DECIMAL(10, 2)
+AS
+BEGIN
+    DECLARE @Montant DECIMAL(10, 2);
+    
+    SELECT @Montant = (MontantTotal - MontantAssurance)
+    FROM Facture
+    WHERE NoFacture = @NoFacture;
+    
+    IF @Montant < 0 SET @Montant = 0; 
+    
+    RETURN @Montant;
+END
+GO
+
+SELECT dbo.fn_CalculerMontantDu(1) AS 'Montant Du';
+GO
+
+-- Fonction table fn_HistoriquePatient
+GO
+IF OBJECT_ID('dbo.fn_HistoriquePatient', 'IF') IS NOT NULL
+    DROP FUNCTION fn_HistoriquePatient;
+GO
+
+CREATE FUNCTION fn_HistoriquePatient (@NoPatient INT)
+RETURNS TABLE
+AS
+RETURN (
+    SELECT 
+        RV.NoRendezVous AS 'No Rendez Vous',
+        RV.DateRV AS 'Date RV',
+        RV.HeureRV AS 'Heure RV',
+        M.Nom + ' ' + M.Prenom AS 'Medecin',
+        M.Specialite,
+        RV.Motif,
+        RV.Statut,
+        PR.Medicament,
+        PR.Dosage,
+        PR.Duree,
+        F.MontantTotal AS 'Montant Total',
+        F.MontantDu AS 'Montant Du',
+        F.Statut AS 'Statut Facture'
+    FROM RendezVous RV
+    INNER JOIN Medecin M ON RV.NoMedecin = M.NoMedecin
+    LEFT JOIN Prescription PR ON RV.NoRendezVous = PR.NoRendezVous
+    LEFT JOIN Facture F ON RV.NoRendezVous = F.NoRendezVous
+    WHERE RV.NoPatient = @NoPatient
+);
+GO
+
+SELECT * FROM dbo.fn_HistoriquePatient(3);
+GO
+
+-- Curseurs
+
+-- Curseur pour générer les relances des factures impayées de plus de 60 jours
+GO
+DECLARE @NoFacture INT, @NoPatient INT, @MontantDu DECIMAL(10, 2);
+
+DECLARE cur_Relance CURSOR FOR
+SELECT NoFacture, NoPatient, MontantDu
+FROM Facture
+WHERE Statut = 'Non payé' AND DATEDIFF(DAY, DateFacture, GETDATE()) > 60;
+
+OPEN cur_Relance;
+
+FETCH NEXT FROM cur_Relance INTO @NoFacture, @NoPatient, @MontantDu;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    INSERT INTO Relance (NoFacture, NoPatient, DateRelance, MontantDu, Statut)
+    VALUES (@NoFacture, @NoPatient, GETDATE(), @MontantDu, 'En attente');
+    
+    FETCH NEXT FROM cur_Relance INTO @NoFacture, @NoPatient, @MontantDu;
+END
+
+CLOSE cur_Relance;
+DEALLOCATE cur_Relance;
+
+SELECT * FROM Relance;
+GO
+
+-- Optimisation
+
+-- Index 1 : Pour optimiser les recherches par date de rendez-vous
+CREATE NONCLUSTERED INDEX IX_RendezVous_DateRV ON RendezVous(DateRV);
+-- J'ai créé cet index sur la colonne DateRV car de nombreuses requêtes et opérations du système 
+-- utilisent cette colonne comme filtre de recherche principal dans la clause WHERE
+
+-- Index 2 : Pour optimiser les recherches des factures impayées
+CREATE NONCLUSTERED INDEX IX_Facture_Statut ON Facture(Statut);
+-- J'ai indexé la colonne Statut de la table Facture car le système interroge très fréquemment cette table pour isoler les factures 'Non payé'.
+-- Cela évite au moteur SQL de parcourir toute la table à chaque fois.
