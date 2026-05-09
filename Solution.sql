@@ -88,7 +88,7 @@ CREATE TABLE Relance (
 );
 GO
 
--- Insertion des données (Sans les identifiants)
+-- Insertion des données
 INSERT INTO Patient (Nom, Prenom, DateNaissance, NoAssurance, Maladie, Telephone) VALUES
 ('Tremblay', 'Jean', '1980-05-14', 'TREJ12345678', 'Hypertension', '514-555-1234'),
 ('Gagnon', 'Marie', '1992-08-22', 'GAGM87654321', 'Diabète', '438-555-9876'),
